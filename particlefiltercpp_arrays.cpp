@@ -108,7 +108,7 @@ int main(void) {
 
 		for (j = 0; j < n; j++) {
 			// TRUTH: add noise
-			x[i + 1][j + 1] += (w[j]/100);
+			x[i + 1][j + 1] += (w[j]/10);
 		}
 		// MEASURE: which is dynamics_with_noise
 		y[i + 1] = x[i + 1][0] + v[0];
@@ -180,7 +180,7 @@ int main(void) {
 	// Deallocate memory: x, xp, y
 	// De-Allocate memory to prevent memory leak
 	for (int i = 0; i < tstep; ++i) {
-		for (int j = 0; j < n; ++j) {
+		for (int j = 0; j < Np; ++j) {
 			delete[] xp[i][j];
 		}
 		//cout << "x: " << x[i][0] << " x_hat: " << x_hat[i][0] << endl;
@@ -190,6 +190,8 @@ int main(void) {
 		out_data << x[i][1] << " ";
 		out_data << x_hat[i][1] << "\n";
 		delete[] xp[i];
+		delete[] x[i];
+		delete[] x_hat[i];
 		//delete[] x[i];
 	}
 	delete[] xp;
