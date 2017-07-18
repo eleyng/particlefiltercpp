@@ -32,7 +32,7 @@ int dynamics(double* arr1, double* arr2);
 
 int main(void) {
 
-	ofstream out_data("plottingdata.dat");
+	ofstream out_data("plottingdata.txt");
 
 	// Truth Equation
 	double **x;
@@ -88,7 +88,7 @@ int main(void) {
 			xp[0][p][d] = distribution(generator);
 			xp[1][p][d] = distribution(generator);
 		}
-		cout << "xp initial: " << xp[0][p][0] << endl;
+		//cout << "xp initial: " << xp[0][p][0] << endl;
 	}
 
 	//TIME STEP LOOP
@@ -118,14 +118,14 @@ int main(void) {
 		for (int p = 0; p < (Np); p++) {
 			// Particle state estimate: propogate dynamics
 			dynamics(xp[i][p], xp[i + 1][p]);
-			cout << "i: " << i << "\np: " << p << "\nposition" << xp[i][p][0] << " velocity "  << xp[i][p][1] << endl;
+			//cout << "i: " << i << "\np: " << p << "\nposition" << xp[i][p][0] << " velocity "  << xp[i][p][1] << endl;
 			// Particle measurement
 			yp[p][0] = xp[i + 1][p][0];
 		}
 		
 		// ESTIMATE AND RESAMPLE
 		double residual[Np][nm], q_i[Np];
-		double est_sum[n];
+		double est_sum[n] = { 0, 0 };
 		double sumq = 0;
 		// calculating the residuals for each particle
 		for (int p = 0; p < Np; p++) {
@@ -134,30 +134,36 @@ int main(void) {
 			}
 			residual[p][0] = y[i + 1] - yp[p][0];
 			q_i[p] = exp(-(residual[p][0] * residual[p][0] * (1 / R[0][0])) / 2);
-			cout << "q: " << q_i[p];
+			//cout << "q: " << q_i[p] << endl;
 			sumq += q_i[p];
 		}
 		x_hat[i + 1][0] = est_sum[0] / Np;
 		x_hat[i + 1][1] = est_sum[1] / Np;
+		//cout << "x_hat " << x_hat[i + 1][0] <<endl;
 
 		// dividing by the q_total
 		for (int p = 0; p < Np; p++) {
 			q_i[p] /= sumq;
+			//cout << i << " q " << q_i[p] << endl;
 		}
 		// calculating c vector
 		double c[Np];
 		c[0] = q_i[0];
 		for (int p = 1; p < Np; p++) {
 			c[p] = c[p - 1] + q_i[p];
+			//cout << p << " c " << c[p] << endl;
 		}
 
 		double tmp_xp[Np][n];
+
 		for (int p = 0; p < Np; p++) {
-			double r = rand() / Np;
+			double r = ((double)rand() / (RAND_MAX));
+			//cout << "r " << r << endl;
 			int ind = 0;
-			while (r > c[ind] && (ind < (Np-1)) ) {
+			while (c[ind] < r && ind < (Np-1)) {
 				ind++;
 			}
+			//cout << "ind " << ind << endl;
 			tmp_xp[p][0] = xp[i + 1][ind][0];
 			tmp_xp[p][1] = xp[i + 1][ind][1];
 		}
@@ -177,10 +183,12 @@ int main(void) {
 		for (int j = 0; j < n; ++j) {
 			delete[] xp[i][j];
 		}
-		cout << "x: " << x[i][0] << " x_hat: " << x_hat[i][0] << endl;
+		//cout << "x: " << x[i][0] << " x_hat: " << x_hat[i][0] << endl;
 		out_data << i << " ";
 		out_data << x[i][0] << " ";
-		out_data << xp[i][Np-1][0] << "\n";
+		out_data << x_hat[i][0] << " ";
+		out_data << x[i][1] << " ";
+		out_data << x_hat[i][1] << "\n";
 		delete[] xp[i];
 		//delete[] x[i];
 	}
