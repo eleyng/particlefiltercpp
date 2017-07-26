@@ -1,8 +1,7 @@
 // Implementation of a PF on CPU in C/C++
 // Using PF to estimate the position (state) on a 1D mass-spring-damper system
 
-#include "stdafx.h"
-//#include "pf_func.h"
+//#include "stdafx.h"
 #include <functional>
 #include <stdio.h>
 #include <cmath>
@@ -26,10 +25,8 @@ using namespace std;
 // Global variables
 double dt = total_time / tstep;
 
+// GPU FUNCTIONS
 int dynamics(double* arr1, double* arr2);
-//int particle_generator(double ***xp);
-// int covariance(double w[n], double *v);
-// double estimate(double particles[Np][n]);
 
 int main(void) {
 
@@ -172,7 +169,12 @@ int main(void) {
 		}
 		i++;
 	}
-
+	
+	
+	
+	
+	
+	// CPU CODE: FREE MEMORY
 	// Deallocate memory: x, xp, y
 	// De-Allocate memory to prevent memory leak
 	for (int i = 0; i < tstep; ++i) {
