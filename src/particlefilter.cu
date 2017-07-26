@@ -12,6 +12,10 @@
 #include <curand.h>
 #include <curand_kernel.h>
 #include <cuda.h>
+#include <thrust/host_vector.h>
+#include <thrust/device_vector.h>
+#include <thrust/functional.h>
+#include <thrust/reduce.h>
 using namespace std;
 
 #define n 2 // number of states
@@ -21,24 +25,23 @@ using namespace std;
 #define m 10.0 // kg
 #define tstep 1000 // number of steps for the entire simulation
 #define total_time 30.0 // seconds
-#define Np 1024*1 // number of particles in each simulation = num_SM * threads
+#define Np 1024*3 // number of particles in each simulation = num_SM * threads
 #define THREADS 1024
+//#define BLOCKS 3
 
 
 // Global variables
-float dt = total_time / tstep;
-int BLOCKS = Np / THREADS + (Np % THREADS);
+const int BLOCKS = Np / THREADS + (Np % THREADS);
+const int size = Np * BLOCKS * tstep * n;
 
 // Device constant memory
+__constant__ float dt = total_time / tstep;
 __constant__ float sigma_x0[n] = { 0.5, 0.5 };
+__constant__ float y[tstep];
 
 // Device variables
-__device__ float yp[Np][nm];
-__device__ float residual[Np][nm];
-__device__ float q_i[Np];
-__device__ float est_sum[n] = {0.0, 0.0};
-__device__ float sumq = 0.0;
-__device__ float xp_tmp[2][Np][n];
+
+
 
 
 
@@ -57,31 +60,8 @@ __global__ void initializeParticles (float ***xp, float **x_hat) {
 		xp[0][pid][j] = sigma_x0[j] + x_hat[0][j];
 	}
 }
-
-// Device function: project particles for this particular time step
-__global__ void proj_particles ( float ***xp_tmp, float *x_hat) { //passing in x_hat[i+1]; xp_tmp is xp_curr and xp_prev
-	
-	float **xp_curr = xp_tmp[1];
-	float **xp_prev = xp_tmp[0];
-	dynamics(xp_prev, xp_curr);
-	
-	int pid = threadIdx.x + blockIdx.x * blockDim.x;
-	for (int j = 0; j < n; j++) {
-		xp_curr[pid][j] += dice_x();
-		// calculate resiuduals
-		est_sum[j] += xp_curr[pid][j];
-	}
-	// Particle measurement
-	yp[pid][0] = xp_curr[pid][0] + dice_v();
-	residual[pid][0] = y[i + 1] - yp[pid][0]; //hardcoded
-	q_i[pid] = exp(-(residual[pid][0] * residual[pid][0] * (1 / R[0])) / 2);
-	sumq += q_i[pid];
-	x_hat_curr[0] = est_sum[0] / Np;
-	x_hat_curr[1] = est_sum[1] / Np;
-}
-
 // Host function
-__host__ __device__ int dynamics(float* arr1, float* arr2);
+__host__ __device__ void dynamics(float* arr1, float* arr2){
 
 	float x_prev = arr1[0];
 	float dx_prev = arr1[1];
@@ -89,15 +69,91 @@ __host__ __device__ int dynamics(float* arr1, float* arr2);
 	// acceleration from previous state to find velocity
 	float ddx = -(b / m)* (dx_prev)-(k / m)* (x_prev);
 
-
 	// velocity (index 1) and position (index 2) calcs
 	arr2[1] = dx_prev + (ddx * dt);
 	arr2[0] = x_prev + (dx_prev * dt);
 	//std::cout << "print " << arr1;
 
-	return 0;
 }
 
+__device__ void gen_distrib(float **Q, float *R) {
+
+	std::normal_distribution<float> distribution_w1(0.0, Q[0][0]);
+	std::normal_distribution<float> distribution_w2(0.0, Q[1][1]);
+	std::normal_distribution<float> distribution_v(0.0, R[0]);
+	std::normal_distribution<float> distribution_x(0.0, 1.0);
+	// Create random number generators for w1, w2, and v
+	unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
+	std::default_random_engine generator(seed);
+	auto dice_w1 = std::bind(distribution_w1, generator);
+	auto dice_w2 = std::bind(distribution_w2, generator);
+	auto dice_v = std::bind(distribution_v, generator);
+	auto dice_x = std::bind(distribution_x, generator);
+
+}
+
+
+// Device function: project particles for this particular time step
+__global__ void est_p ( float **xp_prev, **xp_curr, float **x_hat, float y, float *blocksum) { //passing in x_hat[i+1]; xp_tmp is xp_curr and xp_prev
+	
+	// Propogate dynamics for particles
+	dynamics(xp_prev, xp_curr);
+	
+	int pid = threadIdx.x + blockIdx.x * blockDim.x;
+	__shared__ float est_sum[Np][n];
+	__device__ float blocksum[BLOCKS];
+	float yp[Np][nm];
+	int est_ind = threadIdx.x;	
+	float tmp0 = 0.0;
+	float tmp1 = 0.0; 
+	float residual[Np][nm];
+	float q_i[Np];
+	xp_curr[pid][0] += dice_x();
+	xp_curr[pid][1] += dice_x();
+	yp[pid][0] = xp_curr[pid][0] + dice_v();	
+	residual[pid][0] = y[i + 1] - yp[pid][0];
+	q_i[pid] = exp(-(residual[pid][0] * residual[pid][0] * (1 / R[0])) / 2);
+	
+	// Perform a series of reductions just to get the estimate sum...
+	while ( pid < Np ) {	
+		tmp0 += xp_curr[pid][0];
+		tmp1 += xp_curr[pid][1];
+		pid += blockDim.x * gridDim.x;
+	}
+	est_sum[est_ind][0] = tmp0;
+	est_sum[est_ind][1] = tmp1;
+	__syncthreads();	
+	
+	int i = blockDim.x/2;
+	while( i!=0 ) {
+		if (est_ind < i) 
+			for (int j = 0; j < n; j++){
+				est_sum[est_ind][j] += est_sum[est_ind + i][j];
+			}
+		__syncthreads();
+		i /= 2;
+	}
+
+	int bid = blockIdx.x;
+	if (est_ind == 0) 
+		blocksum[bid][0] = est_sum[0][0];
+		blocksum[bid][1] = est_sum[0][1];
+	float xp_sum[n];
+	for (int z = 0; z < BLOCKS; x++) {
+		xp_sum[0] += blocksum[z][0];
+		xp_sum[1] += blocksum[z][1];
+	}
+		
+	// Particle weights
+ //hardcoded
+
+	float sumq = 0.0;
+	sumq += q_i[pid];
+	__syncthreads();
+	x_hat[0] = xp_sum[0] / Np;
+	x_hat[1] = xp_sum[1] / Np;
+
+}
 
 
 // Host MAIN
@@ -136,6 +192,7 @@ int main(void) {
 	x_hat[0][1] = 0.0;
 	y[0] = x[0][0]; // initial measurement
 	float sigma_w[n] = { 0.01, 0.01 };
+	cudaMemcpyToSymbol( d_y, y, sizeof(float) * tstep);
 	// Q is diagonal matrix of sigma_w; currently hardcoded
 	float Q[n][n] = { { powf(sigma_w[0], 2.0), 0 },{ 0, powf(sigma_w[1],2.0) } };
 	float sigma_v[nm] = { 0.2 };
@@ -145,17 +202,7 @@ int main(void) {
 	//float *v_ptr = v;
 	//float sigma_x0[n] = { 0.5, 0.5 };
 	// distribution generator
-	std::normal_distribution<float> distribution_w1(0.0, Q[0][0]);
-	std::normal_distribution<float> distribution_w2(0.0, Q[1][1]);
-	std::normal_distribution<float> distribution_v(0.0, R[0]);
-	std::normal_distribution<float> distribution_x(0.0, 1.0);
-	// Create random number generators for w1, w2, and v
-	unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
-	std::default_random_engine generator(seed);
-	auto dice_w1 = std::bind(distribution_w1, generator);
-	auto dice_w2 = std::bind(distribution_w2, generator);
-	auto dice_v = std::bind(distribution_v, generator);
-	auto dice_x = std::bind(distribution_x, generator);
+	gen_distrib(Q, R);
 
 	//CPU: TRUTH AND MEASUREMENT WITH NOISE
 	int i = 0; 
@@ -202,7 +249,7 @@ int main(void) {
 		float est_sum[n] = { 0, 0 };
 		float sumq = 0; */
 		
-		for (int p = 0; p < (Np); p++) {
+		/*for (int p = 0; p < (Np); p++) {
 			// Particle state estimate: propogate dynamics
 			dynamics(xp[i][p], xp[i + 1][p]);
 			for (int j = 0; j < n; j++) {
@@ -218,6 +265,9 @@ int main(void) {
 		}
 		x_hat[i + 1][0] = est_sum[0] / Np;
 		x_hat[i + 1][1] = est_sum[1] / Np;
+		*/
+		est_p(xp[i], xp[i+1]);
+		
 		// obtaining the weights and cumulative sum - faster on CPU?
 		float c[Np];
 		for (int p = 0; p < Np; p++) {
