@@ -102,6 +102,7 @@ __global__ void est_p ( float **xp_prev, **xp_curr, float **x_hat, float y, floa
 	int pid = threadIdx.x + blockIdx.x * blockDim.x;
 	__shared__ float est_sum[Np][n];
 	__device__ float blocksum[BLOCKS];
+	
 	float yp[Np][nm];
 	int est_ind = threadIdx.x;	
 	float tmp0 = 0.0;
@@ -123,36 +124,69 @@ __global__ void est_p ( float **xp_prev, **xp_curr, float **x_hat, float y, floa
 	est_sum[est_ind][0] = tmp0;
 	est_sum[est_ind][1] = tmp1;
 	__syncthreads();	
-	
-	int i = blockDim.x/2;
-	while( i!=0 ) {
-		if (est_ind < i) 
-			for (int j = 0; j < n; j++){
-				est_sum[est_ind][j] += est_sum[est_ind + i][j];
-			}
-		__syncthreads();
-		i /= 2;
-	}
 
-	int bid = blockIdx.x;
-	if (est_ind == 0) 
-		blocksum[bid][0] = est_sum[0][0];
-		blocksum[bid][1] = est_sum[0][1];
-	float xp_sum[n];
-	for (int z = 0; z < BLOCKS; x++) {
-		xp_sum[0] += blocksum[z][0];
-		xp_sum[1] += blocksum[z][1];
-	}
+
+	
+	xp_sum[0] = temp[0];
+	xp_sum[1] = temp[1];
+	x_hat[0] = xp_sum[0] / Np;
+	x_hat[1] = xp_sum[1] / Np;
 		
 	// Particle weights
- //hardcoded
-
 	float sumq = 0.0;
 	sumq += q_i[pid];
 	__syncthreads();
-	x_hat[0] = xp_sum[0] / Np;
-	x_hat[1] = xp_sum[1] / Np;
+	
+	
 
+
+}
+
+// Device parallel sum scan algorithm (up-sweep: reduction phase)
+// input 1: pointer to input array for reduction
+// input 2: pointer to the reduced value
+// input 3: number of values to be reduced (size of input array)
+// input 4: number of states involved
+__device__ parallelreduction (int *input, int *total, int N, int states) {
+
+	int tid = threadIdx.x;
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	
+	__shared__ float cachesum[N][s];
+	cachesum[tid] = (i<N) ? input[i] : 0;
+	__syncthreads();
+	for (int i = blockDim.x/2; i > 0; i = i/2){
+		if (tid < i)
+			for (int j = 0; j <n; j++) {
+				cachesum[tid][j] += cachesum[tid + i][j];
+			}
+	}
+	__syncthreads();
+	if (est_ind == 0) 
+		for (int s = 0; s < states; s++) {
+			atomicAdd(total[0][s], cachesum[tid][s]);
+
+		}
+}
+
+// Device parallel sum scan algorithm (down-sweep)
+__device__ void cumsum( float* c, float *q_i){
+	// obtaining the weights and cumulative sum - faster on CPU?
+	__device__ float c[Np];
+	
+	int tid = threadIdx.x;
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	
+	//WIP
+	for (int p = 0; p < Np; p++) {
+		q_i[p] /= sumq;
+		if (p != 0) {
+			c[p] = c[p - 1] + q_i[p];
+		}
+		else {
+			c[0] = q_i[0];
+		}
+	}
 }
 
 
